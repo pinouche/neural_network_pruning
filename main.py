@@ -26,12 +26,6 @@ def model_keras(seed, data):
 
         initializer = keras.initializers.glorot_normal(seed=seed)
 
-        init_input_weights = tf.random_normal_initializer(mean=0.0, stddev=1 / np.sqrt((input_size + hidden_size) / 2),
-                                                          seed=seed)
-        init_output_weights = tf.random_normal_initializer(mean=0.0,
-                                                           stddev=1 / np.sqrt((hidden_size + output_size) / 2),
-                                                           seed=seed)
-
         model = keras.models.Sequential([
 
             keras.layers.Dense(hidden_size, activation=nn.selu, use_bias=True,
@@ -48,14 +42,6 @@ def model_keras(seed, data):
         output_size = 10
 
         initializer = keras.initializers.glorot_normal(seed=seed)
-
-        init_input_weights = tf.random_normal_initializer(mean=0.0, stddev=1 / np.sqrt((input_size + hidden_size) / 2),
-                                                          seed=seed)
-        init_hidden_weights = tf.random_normal_initializer(mean=0.0, stddev=1 / np.sqrt(hidden_size),
-                                                           seed=seed)
-        init_output_weights = tf.random_normal_initializer(mean=0.0,
-                                                           stddev=1 / np.sqrt((hidden_size + output_size) / 2),
-                                                           seed=seed)
 
         model = keras.models.Sequential([
 
@@ -84,6 +70,7 @@ def model_keras(seed, data):
 
 def crossover_offspring(data, x_train, y_train, x_test, y_test, pair_list, work_id, data_struc,
                         parallel="process"):
+
     # shuffle input data here
     # np.random.seed(work_id)
     # shuffle_list = np.arange(x_train.shape[0])

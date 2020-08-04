@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 import pickle
 import os
 from tensorflow.python import keras
@@ -62,15 +62,6 @@ def softmax(x):
     return e_x / e_x.sum()
 
 
-def one_hot(array):
-    enc = OneHotEncoder(categories='auto')
-    array = np.reshape(array, (array.shape[0], 1))
-    enc.fit(array)
-    array_hot = enc.transform(array)
-
-    return array_hot
-
-
 def get_intermediate_layers(data_x, list_weights):
     num_hidden_layers = int((len(list_weights) - 1) / 2)
     list_hidden_representation = []
@@ -91,10 +82,7 @@ def get_intermediate_layers(data_x, list_weights):
 
 # cross correlation function for both bipartite matching (hungarian method)
 def get_corr(relu_original_one, relu_original_two, crossover="unsafe"):
-    axis_number = 0
-    semi_matching = False
     n = relu_original_one.shape[1]
-
     scaler = StandardScaler()  # Fit your data on the scaler object
     relu_layer_one = scaler.fit_transform(relu_original_one)
     relu_layer_two = scaler.fit_transform(relu_original_two)
@@ -135,7 +123,7 @@ def get_network_similarity(list_corr_matrices, list_ordered_indices_one, list_or
         for index in range(len(list_ordered_indices_one)):
             i = list_ordered_indices_one[layer_num][index]
             j = list_ordered_indices_two[layer_num][index]
-            corr = list_corr_matrices[layer_num][i][j]
+            corr = np.abs(list_corr_matrices[layer_num][i][j])
             list_corr.append(corr)
 
         list_meta.append(np.mean(list_corr))
@@ -152,14 +140,14 @@ def order_weights(nn_weights_list, list_indices_hidden):
     for layer in range(len(list_indices_hidden)):
         for index in range(3):
             if index == 0:
-                nn_weights_list[index + depth] = nn_weights_list[index + depth][:,
-                                                 list_indices_hidden[layer]]  # order columns for weights
+                # order columns for weights
+                nn_weights_list[index + depth] = nn_weights_list[index + depth][:, list_indices_hidden[layer]]
             elif index == 1:
                 nn_weights_list[index + depth] = nn_weights_list[index + depth][
                     list_indices_hidden[layer]]  # order columns for bias
             elif index == 2:
-                nn_weights_list[index + depth] = nn_weights_list[index + depth][list_indices_hidden[layer],
-                                                 :]  # order rows
+                # order rows
+                nn_weights_list[index + depth] = nn_weights_list[index + depth][list_indices_hidden[layer], :]
 
         count += 1
         depth = count * 2
@@ -170,10 +158,6 @@ def order_weights(nn_weights_list, list_indices_hidden):
 
 
 def crossover_method(x_data, weights_nn_one, weights_nn_two, crossover):
-    my_range = list(np.arange(-0.5, 1.52, 1 / 50))
-    my_range[25] = 0
-    my_range[50] = 0.5
-
     list_hidden_representation_one = get_intermediate_layers(x_data, weights_nn_one)
     list_hidden_representation_two = get_intermediate_layers(x_data, weights_nn_two)
 
@@ -189,6 +173,8 @@ def crossover_method(x_data, weights_nn_one, weights_nn_two, crossover):
         list_ordered_indices_one.append(indices_one)
         list_ordered_indices_two.append(indices_two)
 
+    similarity = get_network_similarity(list_corr_matrices, list_ordered_indices_one, list_ordered_indices_two)
+
     # order the weight matrices
 
     if crossover == "naive":
@@ -201,23 +187,44 @@ def crossover_method(x_data, weights_nn_one, weights_nn_two, crossover):
         list_ordered_weights_one = order_weights(weights_nn_one_copy, list_ordered_indices_one)
         list_ordered_weights_two = order_weights(weights_nn_two_copy, list_ordered_indices_two)
 
-    return list_ordered_weights_one, list_ordered_weights_two
+    return list_ordered_weights_one, list_ordered_weights_two, similarity
 
 
-def arithmetic_crossover(network_one, network_two, index):
-
-    t = 0.5
-    scale_factor = np.sqrt(1/(np.power(t, 2)+np.power(1-t, 2)))
+def arithmetic_crossover(network_one, network_two, t=0.5):
+    scale_factor = np.sqrt(1 / (np.power(t, 2) + np.power(1 - t, 2)))
 
     list_weights = []
     for index in range(len(network_one)):
-        averaged_weights = (t*network_one[index] + (1-t)*network_two[index])*scale_factor
+        averaged_weights = (t * network_one[index] + (1 - t) * network_two[index]) * scale_factor
         list_weights.append(averaged_weights)
 
     return list_weights
 
 
+def add_noise_to_fittest(network_one, network_two, information_nn_one, information_nn_two, crossover, seed, index):
 
+    np.random.seed(seed)
 
+    t = 0.5
+    if crossover == "noise_0.1":
+        t = 0.9
+    scale_factor = np.sqrt(1 / (np.power(t, 2) + np.power(1 - t, 2)))
 
+    # choose best parent
+    best_parent = network_one
+    if index == 0:
+        pass
+    else:
+        if np.max(information_nn_one.history["val_acc"]) < np.max(information_nn_two.history["val_acc"]):
+            best_parent = network_two
+
+    list_weights = []
+    for index in range(len(best_parent)):
+        parent_weights = best_parent[index]
+        mean_parent, std_parent = 0.0, np.std(parent_weights)
+        weight_noise = np.random.normal(loc=mean_parent, scale=std_parent, size=parent_weights.shape)
+        averaged_weights = (t * parent_weights + (1 - t) * weight_noise) * scale_factor
+        list_weights.append(averaged_weights)
+
+    return list_weights
 

@@ -5,20 +5,34 @@ import queue
 import multiprocessing
 import warnings
 
-import tensorflow as tf
+# import tensorflow as tf
 from tensorflow.python import nn
-from tensorflow.python import keras
+# from tensorflow.python import keras
+from keras.models import load_model
+import keras
 
+from utils import get_intermediate_layers
+from utils import get_corr
 from utils import crossover_method
 from utils import arithmetic_crossover
 from utils import load_cifar
 from utils import add_noise_to_fittest
+from utils import low_corr_neurons
 
 warnings.filterwarnings("ignore")
 
 
-def model_keras(seed, data):
+class CustomSaver(keras.callbacks.Callback):
+    def __init__(self, epoch_list, parent_id):
+        self.epoch_list = epoch_list
+        self.parent_id = parent_id
 
+    def on_epoch_end(self, epoch, logs={}):
+        if epoch in self.epoch_list:
+            self.model.save("model_" + self.parent_id + "_epoch" + str(epoch) + ".hd5")
+
+
+def model_keras(seed, data):
     if data == "mnist":
         input_size = 784
         hidden_size = 512
@@ -70,7 +84,6 @@ def model_keras(seed, data):
 
 def crossover_offspring(data, x_train, y_train, x_test, y_test, pair_list, work_id, data_struc,
                         parallel="process"):
-
     # shuffle input data here
     # np.random.seed(work_id)
     # shuffle_list = np.arange(x_train.shape[0])
@@ -83,74 +96,88 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, pair_list, work_
 
     print("FOR PAIR NUMBER " + str(pair_id + 1))
 
-    crossover_types = ["safe", "unsafe", "orthogonal", "normed", "naive", "noise_0.5", "noise_0.1"]
+    # crossover_types = ["safe", "unsafe", "orthogonal", "normed", "naive", "noise_0.5", "noise_0.1", "pruning_low_corr,"
+    #                                                                                                "noise_low_corr"]
+
+    crossover_types = ["noise_low_corr"]
     result_list = [[] for _ in range(len(crossover_types))]
     similarity_list = [[] for _ in range(len(crossover_types))]
+    total_training_epoch = 2
+    epoch_list = [1]
 
-    count = 0
+    model_one = model_keras(pair_id, data)
+    model_two = model_keras(pair_id + num_pairs, data)
 
-    for crossover in crossover_types:
-        for index in [0]:
-            print("EPOCH " + str(index))
+    print("one")
+    save_callback = CustomSaver(epoch_list, "parent_one")
+    model_information_parent_one = model_one.fit(x_train, y_train, epochs=total_training_epoch, batch_size=256,
+                                                 verbose=False,
+                                                 validation_data=(x_test, y_test), callbacks=[save_callback])
+    print("two")
 
-            model = model_keras(0, data)
-            model_one = model_keras(pair_id, data)
-            model_two = model_keras(pair_id + num_pairs, data)
+    save_callback = CustomSaver(epoch_list, "parent_two")
+    model_information_parent_two = model_two.fit(x_train, y_train, epochs=total_training_epoch, batch_size=256,
+                                                 verbose=False,
+                                                 validation_data=(x_test, y_test), callbacks=[save_callback])
+    print("three")
 
-            print("one")
-            model_one_information = model_one.fit(x_train, y_train, epochs=index, batch_size=256, verbose=False,
-                                                  validation_data=(x_test, y_test))
-            weights_nn_one = model_one.get_weights()
-            print("three")
+    accuracy_best_parent = model_information_parent_one.history["val_loss"]
+    if np.max(accuracy_best_parent) < np.max(model_information_parent_two.history["val_loss"]):
+        accuracy_best_parent = model_information_parent_two.history["val_loss"]
 
-            model_two_information = model_two.fit(x_train, y_train, epochs=index, batch_size=256, verbose=False,
-                                                  validation_data=(x_test, y_test))
-            weights_nn_two = model_two.get_weights()
-            print("five")
+    for crossover_time in epoch_list:
+        count = 0
+        for crossover in crossover_types:
+
+            # get the parent weights at the corresponding epoch
+            parent_one = load_model("model_parent_one_epoch" + str(crossover_time) + ".hd5")
+            weights_nn_one = parent_one.get_weights()
+
+            parent_two = load_model("model_parent_two_epoch" + str(crossover_time) + ".hd5")
+            weights_nn_two = parent_two.get_weights()
 
             print("crossover method: " + crossover)
             list_ordered_weights_one, list_ordered_weights_two = weights_nn_one, weights_nn_two
-            if crossover not in ["noise_0.5", "noise_0.1"]:
-                list_ordered_weights_one, list_ordered_weights_two, parents_similarity = crossover_method(x_test,
-                                                                                                          weights_nn_one,
-                                                                                                          weights_nn_two,
-                                                                                                          crossover)
+            list_hidden_representation_one = get_intermediate_layers(x_test, list_ordered_weights_one)
+            list_hidden_representation_two = get_intermediate_layers(x_test, list_ordered_weights_two)
+            list_corr_matrices = get_corr(list_hidden_representation_one, list_hidden_representation_two)
+
+            if crossover in ["safe", "unsafe", "orthogonal", "normed", "naive"]:
+                list_ordered_weights_one, list_ordered_weights_two, parents_similarity = crossover_method(
+                    list_ordered_weights_one, list_ordered_weights_two, list_corr_matrices, crossover)
 
             print("seven")
             if crossover in ["noise_0.5", "noise_0.1"]:
                 weights_crossover = add_noise_to_fittest(list_ordered_weights_one, list_ordered_weights_two,
-                                                         model_one_information, model_two_information, crossover,
-                                                         pair_id, index)
+                                                         model_information_parent_one, model_information_parent_two,
+                                                         crossover,
+                                                         pair_id, crossover_time)
+
+            elif crossover in ["pruning_low_corr", "noise_low_corr"]:
+                weights_crossover = low_corr_neurons(list_ordered_weights_one, list_ordered_weights_two,
+                                                    list_corr_matrices,
+                                                    model_information_parent_one, model_information_parent_two,
+                                                    pair_id, crossover_time, crossover, 0.5)
+
             else:
                 weights_crossover = arithmetic_crossover(list_ordered_weights_one, list_ordered_weights_two)
 
-            model.set_weights(weights_crossover)
-            model_information_offspring = model.fit(x_train, y_train, epochs=15, batch_size=256,
-                                                    verbose=False, validation_data=(x_test, y_test))
+            model_offspring = model_keras(0, data)
 
-            print("eight")
-            model_one.set_weights(weights_nn_one)
-            model_information_parent_one = model_one.fit(x_train, y_train, epochs=15, batch_size=256,
-                                                         verbose=False, validation_data=(x_test, y_test))
-
-            print("nine")
-            model_two.set_weights(weights_nn_two)
-            model_information_parent_two = model_two.fit(x_train, y_train, epochs=15, batch_size=256,
-                                                         verbose=False, validation_data=(x_test, y_test))
-
-            accuracy_best_parent = model_information_parent_one.history["val_acc"]
-            if np.max(accuracy_best_parent) < np.max(model_information_parent_two.history["val_acc"]):
-                accuracy_best_parent = model_information_parent_two.history["val_acc"]
+            model_offspring.set_weights(weights_crossover)
+            model_information_offspring = model_offspring.fit(x_train, y_train,
+                                                              epochs=total_training_epoch - crossover_time,
+                                                              batch_size=256,
+                                                              verbose=False, validation_data=(x_test, y_test))
 
             result_list[count].append(accuracy_best_parent)
-            result_list[count].append(model_information_offspring.history["val_acc"])
+            result_list[count].append(model_information_offspring.history["val_loss"])
 
-            if crossover not in ["noise_0.5", "noise_0.1"]:
+            if crossover not in ["noise_0.5", "noise_0.1", "pruning_low_corr", "noise_low_corr"]:
                 similarity_list[count].append(parents_similarity)
 
             keras.backend.clear_session()
-
-        count += 1
+            count += 1
 
     if parallel == "process":
         data_struc[str(work_id) + "_performance"] = result_list

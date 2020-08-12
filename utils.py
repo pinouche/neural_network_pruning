@@ -14,9 +14,7 @@ def unpickle(file):
 
 
 def load_mnist():
-    mnist = keras.datasets.mnist
-
-    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
     x_train, x_test = x_train / 255.0, x_test / 255.0
 
     x_train = np.reshape(x_train, (x_train.shape[0], 28 * 28))
@@ -25,26 +23,17 @@ def load_mnist():
     return x_train, x_test, y_train, y_test
 
 
-def load_cifar():
-    path = "../../Documents/cifar-10-python/cifar-10-batches-py"
+def load_cifar(flatten=True):
+    (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
+    x_train = x_train.astype('float32')
+    x_test = x_test.astype('float32')
 
-    list_y = []
-    list_x = []
-    for file in os.listdir(path):
-        if "data" in file:
-            full_path = path + "/" + file
-            dict_batch = unpickle(full_path)
-            list_y.append(dict_batch[b'labels'])
-            list_x.append(dict_batch[b'data'])
+    x_train = x_train / 255.0
+    x_test = x_test / 255.0
 
-    y_train = np.asarray([val for sublist in list_y for val in sublist])
-    x_train = np.asarray([val for sublist in list_x for val in sublist])
-
-    test_path = path + "/" + "test_batch"
-    dict_test = unpickle(test_path)
-    y_test, x_test = np.asarray(dict_test[b'labels']), np.asarray(dict_test[b'data'])
-
-    x_train, x_test = x_train / 255.0, x_test / 255.0
+    if flatten:
+        x_train = np.reshape(x_train, (x_train.shape[0], 3072))
+        x_test = np.reshape(x_test, (x_test.shape[0], 3072))
 
     return x_train, x_test, y_train, y_test
 
@@ -60,6 +49,17 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
 
     return e_x / e_x.sum()
+
+
+def add_noise(parent_weights, t, seed):
+    np.random.seed(seed)
+
+    scale_factor = np.sqrt(1 / (np.power(t, 2) + np.power(1 - t, 2)))
+    mean_parent, std_parent = 0.0, np.std(parent_weights)
+    weight_noise = np.random.normal(loc=mean_parent, scale=std_parent, size=parent_weights.shape)
+    parent_weights = (t * parent_weights + (1 - t) * weight_noise) * scale_factor
+
+    return parent_weights
 
 
 def get_intermediate_layers(data_x, list_weights):
@@ -80,21 +80,32 @@ def get_intermediate_layers(data_x, list_weights):
     return list_hidden_representation
 
 
+def get_corr(hidden_representation_list_one, hidden_representation_list_two):
+    list_corr_matrices = []
+
+    for index in range(len(hidden_representation_list_one)):
+        hidden_representation_one = hidden_representation_list_one[index]
+        hidden_representation_two = hidden_representation_list_two[index]
+
+        n = hidden_representation_one.shape[1]
+        scaler = StandardScaler()  # Fit your data on the scaler object
+        hidden_representation_one = scaler.fit_transform(hidden_representation_one)
+        hidden_representation_two = scaler.fit_transform(hidden_representation_two)
+
+        corr_matrix_nn = np.empty((n, n))
+
+        for i in range(n):
+            for j in range(n):
+                corr = np.corrcoef(hidden_representation_one[:, i], hidden_representation_two[:, j])[0, 1]
+                corr_matrix_nn[i, j] = corr
+
+        list_corr_matrices.append(corr_matrix_nn)
+
+    return list_corr_matrices
+
+
 # cross correlation function for both bipartite matching (hungarian method)
-def get_corr(relu_original_one, relu_original_two, crossover="unsafe"):
-    n = relu_original_one.shape[1]
-    scaler = StandardScaler()  # Fit your data on the scaler object
-    relu_layer_one = scaler.fit_transform(relu_original_one)
-    relu_layer_two = scaler.fit_transform(relu_original_two)
-
-    # get the correlation matrix for the neurons
-    corr_matrix_nn = np.empty((n, n))
-
-    for i in range(n):
-        for j in range(n):
-            corr = np.corrcoef(relu_layer_one[:, i], relu_layer_two[:, j])[0, 1]
-            corr_matrix_nn[i, j] = corr
-
+def bipartite_matching(corr_matrix_nn, crossover="unsafe"):
     if crossover == "unsafe":
         list_neurons_x, list_neurons_y = linear_sum_assignment(corr_matrix_nn)  # Hungarian method
     elif crossover == "safe":
@@ -112,7 +123,7 @@ def get_corr(relu_original_one, relu_original_two, crossover="unsafe"):
     else:
         raise ValueError('the crossover method is not defined')
 
-    return corr_matrix_nn, list_neurons_x, list_neurons_y
+    return list_neurons_x, list_neurons_y
 
 
 def get_network_similarity(list_corr_matrices, list_ordered_indices_one, list_ordered_indices_two):
@@ -134,7 +145,7 @@ def get_network_similarity(list_corr_matrices, list_ordered_indices_one, list_or
 
 
 # Algorithm 2
-def order_weights(nn_weights_list, list_indices_hidden):
+def apply_mask_to_weights(nn_weights_list, list_indices_hidden):
     count = 0
     depth = count * 2
     for layer in range(len(list_indices_hidden)):
@@ -157,19 +168,40 @@ def order_weights(nn_weights_list, list_indices_hidden):
     return nn_weights_list
 
 
-def crossover_method(x_data, weights_nn_one, weights_nn_two, crossover):
-    list_hidden_representation_one = get_intermediate_layers(x_data, weights_nn_one)
-    list_hidden_representation_two = get_intermediate_layers(x_data, weights_nn_two)
+def apply_mask_and_add_noise(nn_weights_list, list_mask, seed):
 
+    count = 0
+    depth = count * 2
+    for layer in range(len(list_mask)):
+        for index in range(3):
+            if index == 0:
+                # noise the columns
+                nn_weights_list[index + depth][:, list_mask[layer]] = \
+                    add_noise(nn_weights_list[index + depth][:, list_mask[layer]], 0.5, seed)
+            elif index == 1:
+                # order columns for bias
+                nn_weights_list[index + depth][list_mask[layer]] = \
+                    add_noise(nn_weights_list[index + depth][list_mask[layer]], 0.5, seed)
+            elif index == 2:
+                # order rows
+                nn_weights_list[index + depth][list_mask[layer], :] = \
+                    add_noise(nn_weights_list[index + depth][list_mask[layer], :], 0.5, seed)
+
+        count += 1
+        depth = count * 2
+
+    nn_weights_list = np.asarray(nn_weights_list)
+
+    return nn_weights_list
+
+
+def crossover_method(weights_one, weights_two, list_corr_matrices, crossover):
     list_ordered_indices_one = []
     list_ordered_indices_two = []
-    list_corr_matrices = []
-    for index in range(len(list_hidden_representation_one)):
-        hidden_layer_one = list_hidden_representation_one[index]
-        hidden_layer_two = list_hidden_representation_two[index]
+    for index in range(len(list_corr_matrices)):
+        corr_matrix_nn = list_corr_matrices[index]
 
-        corr_matrix_nn, indices_one, indices_two = get_corr(hidden_layer_one, hidden_layer_two, crossover)
-        list_corr_matrices.append(corr_matrix_nn)
+        indices_one, indices_two = bipartite_matching(corr_matrix_nn, crossover)
         list_ordered_indices_one.append(indices_one)
         list_ordered_indices_two.append(indices_two)
 
@@ -178,16 +210,16 @@ def crossover_method(x_data, weights_nn_one, weights_nn_two, crossover):
     # order the weight matrices
 
     if crossover == "naive":
-        list_ordered_weights_one = weights_nn_one[:]
-        list_ordered_weights_two = weights_nn_two[:]
+        list_ordered_w_one = list(weights_one)
+        list_ordered_w_two = list(weights_two)
 
     else:
-        weights_nn_one_copy = weights_nn_one[:]
-        weights_nn_two_copy = weights_nn_two[:]
-        list_ordered_weights_one = order_weights(weights_nn_one_copy, list_ordered_indices_one)
-        list_ordered_weights_two = order_weights(weights_nn_two_copy, list_ordered_indices_two)
+        weights_nn_one_copy = list(weights_one)
+        weights_nn_two_copy = list(weights_two)
+        list_ordered_w_one = apply_mask_to_weights(weights_nn_one_copy, list_ordered_indices_one)
+        list_ordered_w_two = apply_mask_to_weights(weights_nn_two_copy, list_ordered_indices_two)
 
-    return list_ordered_weights_one, list_ordered_weights_two, similarity
+    return list_ordered_w_one, list_ordered_w_two, similarity
 
 
 def arithmetic_crossover(network_one, network_two, t=0.5):
@@ -203,28 +235,65 @@ def arithmetic_crossover(network_one, network_two, t=0.5):
 
 def add_noise_to_fittest(network_one, network_two, information_nn_one, information_nn_two, crossover, seed, index):
 
-    np.random.seed(seed)
-
     t = 0.5
     if crossover == "noise_0.1":
         t = 0.9
-    scale_factor = np.sqrt(1 / (np.power(t, 2) + np.power(1 - t, 2)))
 
     # choose best parent
     best_parent = network_one
     if index == 0:
         pass
     else:
-        if np.max(information_nn_one.history["val_acc"]) < np.max(information_nn_two.history["val_acc"]):
+        if np.max(information_nn_one.history["val_loss"]) < np.max(information_nn_two.history["val_loss"]):
             best_parent = network_two
 
     list_weights = []
     for index in range(len(best_parent)):
         parent_weights = best_parent[index]
-        mean_parent, std_parent = 0.0, np.std(parent_weights)
-        weight_noise = np.random.normal(loc=mean_parent, scale=std_parent, size=parent_weights.shape)
-        averaged_weights = (t * parent_weights + (1 - t) * weight_noise) * scale_factor
-        list_weights.append(averaged_weights)
+        parent_weights = add_noise(parent_weights, t, seed)
+
+        list_weights.append(parent_weights)
 
     return list_weights
 
+
+def low_corr_neurons(network_one, network_two, corr_matrices_list, information_nn_one, information_nn_two,
+                     seed, index, crossover, threshold):
+
+    # choose best parent
+    best_parent = network_one
+    best_parent_switch = False
+    if index == 0:
+        pass
+    else:
+        if np.max(information_nn_one.history["val_loss"]) < np.max(information_nn_two.history["val_loss"]):
+            best_parent = network_two
+            best_parent_switch = True
+
+    mask_list = []
+    for corr_matrix in corr_matrices_list:
+        max_corr_list = []
+        for i in range(corr_matrix.shape[0]):
+            list_corr = []
+            for j in range(corr_matrix.shape[1]):
+                if best_parent_switch:
+                    corr = np.abs(corr_matrix[i, j])
+                else:
+                    corr = np.abs(corr_matrix[j, i])
+
+                list_corr.append(corr)
+            max_corr_list.append(np.max(list_corr))
+
+        quantile = np.quantile(max_corr_list, threshold)
+        mask_array = np.asarray(max_corr_list) >= quantile
+
+        mask_list.append(mask_array)
+
+    if crossover == "pruning_low_corr":
+        best_parent = apply_mask_to_weights(best_parent, mask_list)
+
+    elif crossover == "noise_low_corr":
+        mask_list = [[not element for element in sublist] for sublist in mask_list]
+        best_parent = apply_mask_and_add_noise(best_parent, mask_list, seed)
+
+    return best_parent

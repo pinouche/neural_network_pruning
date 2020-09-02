@@ -4,86 +4,27 @@ import threading
 import queue
 import multiprocessing
 import warnings
+import pickle
 
-# import tensorflow as tf
-from tensorflow.python import nn
-# from tensorflow.python import keras
-from keras.models import load_model
 import keras
+from keras.models import load_model
 
-from utils import get_intermediate_layers
+from utils import keras_get_gradient_weights
+from utils import keras_get_hidden_layers
+from utils import get_gradients_hidden_layers
 from utils import get_corr
-from utils import crossover_method
-from utils import arithmetic_crossover
 from utils import load_cifar
-from utils import add_noise_to_fittest
-from utils import low_corr_neurons
+from utils import prune
+
+from build_model import CustomSaver
+from build_model import model_keras
 
 warnings.filterwarnings("ignore")
 
-
-class CustomSaver(keras.callbacks.Callback):
-    def __init__(self, epoch_list, parent_id):
-        self.epoch_list = epoch_list
-        self.parent_id = parent_id
-
-    def on_epoch_end(self, epoch, logs={}):
-        if epoch in self.epoch_list:
-            self.model.save("model_" + self.parent_id + "_epoch" + str(epoch) + ".hd5")
+#model_keras(seed, data, new_hidden_size_list=None, weights_list=None, mask_list=None)
 
 
-def model_keras(seed, data):
-    if data == "mnist":
-        input_size = 784
-        hidden_size = 512
-        output_size = 10
-
-        initializer = keras.initializers.glorot_normal(seed=seed)
-
-        model = keras.models.Sequential([
-
-            keras.layers.Dense(hidden_size, activation=nn.selu, use_bias=True,
-                               kernel_initializer=initializer, input_shape=(input_size,)),
-            keras.layers.AlphaDropout(0.2, seed=seed),
-            # output layer
-            keras.layers.Dense(output_size, activation=nn.softmax, use_bias=False,
-                               kernel_initializer=initializer)
-        ])
-
-    elif data == "cifar10":
-        input_size = 3072
-        hidden_size = 100
-        output_size = 10
-
-        initializer = keras.initializers.glorot_normal(seed=seed)
-
-        model = keras.models.Sequential([
-
-            keras.layers.Dense(hidden_size, activation=nn.selu, use_bias=True,
-                               kernel_initializer=initializer, input_shape=(input_size,)),
-
-            keras.layers.Dense(hidden_size, activation=nn.selu, use_bias=True,
-                               kernel_initializer=initializer, input_shape=(input_size,)),
-
-            keras.layers.Dense(hidden_size, activation=nn.selu, use_bias=True,
-                               kernel_initializer=initializer),
-            # output layer
-            keras.layers.Dense(output_size, activation=nn.softmax, use_bias=False,
-                               kernel_initializer=initializer)
-        ])
-
-    else:
-        raise Exception("wrong dataset")
-
-    adam = keras.optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, amsgrad=False)
-    model.compile(optimizer=adam, loss='sparse_categorical_crossentropy',
-                  metrics=['accuracy', 'sparse_categorical_crossentropy'])
-
-    return model
-
-
-def crossover_offspring(data, x_train, y_train, x_test, y_test, pair_list, work_id, data_struc,
-                        parallel="process"):
+def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_struc, parallel="process"):
     # shuffle input data here
     # np.random.seed(work_id)
     # shuffle_list = np.arange(x_train.shape[0])
@@ -91,101 +32,72 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, pair_list, work_
     # x_train = x_train[shuffle_list]
     # y_train = y_train[shuffle_list]
 
-    num_pairs = len(pair_list)
-    pair_id = work_id
+    print("FOR PAIR NUMBER " + str(work_id + 1))
 
-    print("FOR PAIR NUMBER " + str(pair_id + 1))
+    # pruning_types = ["pruning_low_corr_neurons_fine_tune", "pruning_low_corr_neurons_add_noise",
+    # "pruning_low_corr_neurons_lottery", pruning_random_weights", "pruning_magnitude_weights_local",
+    # "pruning_magnitude_weights_global", "pruning_gradient_weights_local", "pruning_gradient_weights_global",
+    # "pruning_random_neurons", "pruning_magnitude_neurons_local", "pruning_magnitude_neurons_global".
+    # "pruning_gradient_neurons_local", "pruning_gradient_neurons_global"]
+    pruning_types = ["pruning_magnitude_neurons_global"]
 
-    # crossover_types = ["safe", "unsafe", "orthogonal", "normed", "naive", "noise_0.5", "noise_0.1", "pruning_low_corr,"
-    #                                                                                                "noise_low_corr"]
-
-    crossover_types = ["noise_low_corr"]
-    result_list = [[] for _ in range(len(crossover_types))]
-    similarity_list = [[] for _ in range(len(crossover_types))]
-    total_training_epoch = 2
-    epoch_list = [1]
-
-    model_one = model_keras(pair_id, data)
-    model_two = model_keras(pair_id + num_pairs, data)
+    result_list = [[] for _ in range(len(pruning_types))]
+    batch_size_original = 256
+    quantile = 0.5
+    total_training_epoch = 20
+    epoch_list = [20]
 
     print("one")
-    save_callback = CustomSaver(epoch_list, "parent_one")
-    model_information_parent_one = model_one.fit(x_train, y_train, epochs=total_training_epoch, batch_size=256,
-                                                 verbose=False,
-                                                 validation_data=(x_test, y_test), callbacks=[save_callback])
+    model_original = model_keras(work_id, data)
+    model_original.save("network_init_" + str(work_id) + ".hd5")
+
+    save_callback = CustomSaver(epoch_list)
+    model_information_original_network = model_original.fit(x_train, y_train, epochs=total_training_epoch,
+                                                            batch_size=batch_size_original,
+                                                            verbose=False,
+                                                            validation_data=(x_test, y_test), callbacks=[save_callback])
     print("two")
 
-    save_callback = CustomSaver(epoch_list, "parent_two")
-    model_information_parent_two = model_two.fit(x_train, y_train, epochs=total_training_epoch, batch_size=256,
-                                                 verbose=False,
-                                                 validation_data=(x_test, y_test), callbacks=[save_callback])
-    print("three")
+    count = 0
+    for pruning_method in pruning_types:
+        # get the parent weights at the corresponding epoch
+        original_network = load_model("original_network_" + str(epoch_list[0]) + ".hd5")
+        weights_trained_original = original_network.get_weights()
 
-    accuracy_best_parent = model_information_parent_one.history["val_loss"]
-    if np.max(accuracy_best_parent) < np.max(model_information_parent_two.history["val_loss"]):
-        accuracy_best_parent = model_information_parent_two.history["val_loss"]
+        print("crossover method: " + pruning_method)
+        list_gradient_weight = keras_get_gradient_weights(original_network, x_test)
+        list_gradient_hidden_layers = get_gradients_hidden_layers(original_network, x_test)
+        list_hidden_representation = keras_get_hidden_layers(original_network, x_test)
+        list_corr_matrices = get_corr(list_hidden_representation)
 
-    for crossover_time in epoch_list:
-        count = 0
-        for crossover in crossover_types:
+        weights_pruned = prune(weights_trained_original, list_hidden_representation,
+                               list_gradient_hidden_layers,
+                               list_gradient_weight,
+                               list_corr_matrices, work_id,
+                               pruning_method, quantile)
 
-            # get the parent weights at the corresponding epoch
-            parent_one = load_model("model_parent_one_epoch" + str(crossover_time) + ".hd5")
-            weights_nn_one = parent_one.get_weights()
+        # get the new size of the networks
+        pruned_hidden_layer_size = [weight.shape[0] for weight in weights_pruned if len(weight.shape) == 1]
+        print(pruned_hidden_layer_size)
 
-            parent_two = load_model("model_parent_two_epoch" + str(crossover_time) + ".hd5")
-            weights_nn_two = parent_two.get_weights()
+        model_pruned = model_keras(0, data, pruned_hidden_layer_size)
 
-            print("crossover method: " + crossover)
-            list_ordered_weights_one, list_ordered_weights_two = weights_nn_one, weights_nn_two
-            list_hidden_representation_one = get_intermediate_layers(x_test, list_ordered_weights_one)
-            list_hidden_representation_two = get_intermediate_layers(x_test, list_ordered_weights_two)
-            list_corr_matrices = get_corr(list_hidden_representation_one, list_hidden_representation_two)
+        model_pruned.set_weights(weights_pruned)
+        model_information_pruned = model_pruned.fit(x_train, y_train,
+                                                    epochs=int(total_training_epoch / 2),
+                                                    batch_size=batch_size_original,
+                                                    verbose=False, validation_data=(x_test, y_test))
 
-            if crossover in ["safe", "unsafe", "orthogonal", "normed", "naive"]:
-                list_ordered_weights_one, list_ordered_weights_two, parents_similarity = crossover_method(
-                    list_ordered_weights_one, list_ordered_weights_two, list_corr_matrices, crossover)
+        result_list[count].append(model_information_original_network.history["val_loss"])
+        result_list[count].append(model_information_pruned.history["val_loss"])
 
-            print("seven")
-            if crossover in ["noise_0.5", "noise_0.1"]:
-                weights_crossover = add_noise_to_fittest(list_ordered_weights_one, list_ordered_weights_two,
-                                                         model_information_parent_one, model_information_parent_two,
-                                                         crossover,
-                                                         pair_id, crossover_time)
-
-            elif crossover in ["pruning_low_corr", "noise_low_corr"]:
-                weights_crossover = low_corr_neurons(list_ordered_weights_one, list_ordered_weights_two,
-                                                    list_corr_matrices,
-                                                    model_information_parent_one, model_information_parent_two,
-                                                    pair_id, crossover_time, crossover, 0.5)
-
-            else:
-                weights_crossover = arithmetic_crossover(list_ordered_weights_one, list_ordered_weights_two)
-
-            model_offspring = model_keras(0, data)
-
-            model_offspring.set_weights(weights_crossover)
-            model_information_offspring = model_offspring.fit(x_train, y_train,
-                                                              epochs=total_training_epoch - crossover_time,
-                                                              batch_size=256,
-                                                              verbose=False, validation_data=(x_test, y_test))
-
-            result_list[count].append(accuracy_best_parent)
-            result_list[count].append(model_information_offspring.history["val_loss"])
-
-            if crossover not in ["noise_0.5", "noise_0.1", "pruning_low_corr", "noise_low_corr"]:
-                similarity_list[count].append(parents_similarity)
-
-            keras.backend.clear_session()
-            count += 1
+        keras.backend.clear_session()
+        count += 1
 
     if parallel == "process":
         data_struc[str(work_id) + "_performance"] = result_list
-        data_struc[str(work_id) + "_similarity"] = similarity_list
     elif parallel == "thread":
         data_struc.put(result_list)
-
-    print("ten")
 
 
 if __name__ == "__main__":
@@ -230,8 +142,9 @@ if __name__ == "__main__":
         pair_list = [pair for pair in range(num_processes)]
 
         p = [multiprocessing.Process(target=crossover_offspring, args=(data, x_train, y_train, x_test, y_test,
-                                                                       pair_list, i, return_dict,
-                                                                       parallel_method)) for i in range(num_processes)]
+                                                                       worker_id, return_dict,
+                                                                       parallel_method)) for worker_id in
+             range(num_processes)]
 
         for proc in p:
             proc.start()
@@ -239,6 +152,7 @@ if __name__ == "__main__":
             proc.join()
 
         results = return_dict.values
+        pickle.dump(results, open("crossover_results.pickle", 'wb'))
 
         end = timer()
         print(end - start)

@@ -18,25 +18,27 @@ class Selu(keras.layers.Layer):
         super(Selu, self).__init__()
 
         tf.set_random_seed(seed)
+        if mask is None:
+            mask = 1
 
         if weights is None:
             w_init = tf.glorot_normal_initializer()
-            self.w = tf.Variable(initial_value=w_init(shape=(input_dim, units), dtype="float32"), trainable=True,
-                                 name="weight_")
+            self.w = tf.Variable(initial_value=w_init(shape=(input_dim, units), dtype="float32"), trainable=True)
 
             b_init = tf.zeros_initializer()
             self.b = tf.Variable(initial_value=b_init(shape=(units,), dtype="float32"), trainable=True)
 
         else:
-            self.w = tf.Variable(initial_value=weights, trainable=True)
+            self.w = tf.Variable(initial_value=weights, trainable=True, dtype=tf.float32)
             if mask is not None:
-                self.w = self.w * mask
+                self.w = tf.cast(self.w, tf.float32) * mask
 
             # do not prune the weights
-            self.b = tf.Variable(initial_value=bias, trainable=True)
+            self.b = tf.Variable(initial_value=bias, trainable=True, dtype=tf.float32)
 
     def call(self, inputs):
 
+        print(self.w, self.b)
         activation_layer = keras.activations.selu(tf.matmul(inputs, self.w) + self.b)
 
         return activation_layer
@@ -47,13 +49,15 @@ class Output(keras.layers.Layer):
         super(Output, self).__init__()
 
         tf.set_random_seed(seed)
+        if mask is None:
+            mask = 1
 
         if weights is None:
             w_init = tf.glorot_normal_initializer()
             self.w = tf.Variable(initial_value=w_init(shape=(input_dim, output_dim), dtype="float32"), trainable=True)
 
         else:
-            self.w = tf.Variable(initial_value=weights, trainable=True)
+            self.w = tf.Variable(initial_value=weights, trainable=True, dtype=tf.float32)
             if mask is not None:
                 self.w = self.w * mask
 
@@ -73,13 +77,11 @@ def init_keras_variables_session():
 
 def feed_forward_model(hidden_size_list, input_size, output_size, seed, weights_list, mask_list):
 
-    number_of_layers = len(hidden_size_list)
-
     model = keras.models.Sequential()
     model.add(keras.layers.InputLayer(input_shape=(input_size,)))
 
     weight_bias_index = 0
-    for index in range(number_of_layers):
+    for index in range(len(hidden_size_list)):
         if index == 0:
             # input layer
             model.add(Selu(hidden_size_list[index], input_size, seed, weights_list[weight_bias_index],
@@ -97,36 +99,34 @@ def feed_forward_model(hidden_size_list, input_size, output_size, seed, weights_
     return model
 
 
-def model_keras(seed, data, new_hidden_size_list=None, weights_list=None, mask_list=None):
+def model_keras(seed, data, hidden_size_list=None, weights_list=None, mask_list=None):
     if data == "mnist":
         number_of_layers = 1
         hidden_size = 512
-        hidden_size_list = [hidden_size] * number_of_layers
         input_size = 784
         output_size = 10
 
-        if new_hidden_size_list is not None:
-            hidden_size_list = new_hidden_size_list
+        if hidden_size_list is None:
+            hidden_size_list = [hidden_size] * number_of_layers
         if weights_list is None:
-            weights_list = [None] * number_of_layers
+            weights_list = [None] * int(number_of_layers*2+1)
         if mask_list is None:
-            mask_list = [None] * number_of_layers
+            mask_list = [None] * int(number_of_layers*2+1)
 
         model = feed_forward_model(hidden_size_list, input_size, output_size, seed, weights_list, mask_list)
 
     elif data == "cifar10":
         number_of_layers = 3
         hidden_size = 100
-        hidden_size_list = [hidden_size] * number_of_layers
         input_size = 3072
         output_size = 10
 
-        if new_hidden_size_list is not None:
-            hidden_size_list = new_hidden_size_list
+        if hidden_size_list is None:
+            hidden_size_list = [hidden_size] * number_of_layers
         if weights_list is None:
-            weights_list = [None] * number_of_layers
+            weights_list = [None] * int(number_of_layers*2+1)  # weight, bias per layer and only weight for output layer
         if mask_list is None:
-            mask_list = [None] * number_of_layers
+            mask_list = [None] * int(number_of_layers*2+1)
 
         model = feed_forward_model(hidden_size_list, input_size, output_size, seed, weights_list, mask_list)
 

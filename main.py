@@ -1,4 +1,3 @@
-import numpy as np
 from timeit import default_timer as timer
 import threading
 import queue
@@ -6,22 +5,23 @@ import multiprocessing
 import warnings
 import pickle
 
+import tensorflow as tf
 import keras
-from keras.models import load_model
 
 from utils import keras_get_gradient_weights
 from utils import keras_get_hidden_layers
 from utils import get_gradients_hidden_layers
 from utils import get_corr
 from utils import load_cifar
-from utils import prune
 
-from build_model import CustomSaver
-from build_model import model_keras
+from compute_mask import prune
+
+from feed_forward import CustomSaver
+from feed_forward import model_keras
+from feed_forward import init_keras_variables_session
 
 warnings.filterwarnings("ignore")
-
-#model_keras(seed, data, new_hidden_size_list=None, weights_list=None, mask_list=None)
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 
 def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_struc, parallel="process"):
@@ -39,17 +39,20 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
     # "pruning_magnitude_weights_global", "pruning_gradient_weights_local", "pruning_gradient_weights_global",
     # "pruning_random_neurons", "pruning_magnitude_neurons_local", "pruning_magnitude_neurons_global".
     # "pruning_gradient_neurons_local", "pruning_gradient_neurons_global"]
-    pruning_types = ["pruning_magnitude_neurons_global"]
+    pruning_types = ["pruning_magnitude_weights_global"]
 
     result_list = [[] for _ in range(len(pruning_types))]
     batch_size_original = 256
     quantile = 0.5
-    total_training_epoch = 20
-    epoch_list = [20]
+    total_training_epoch = 5
+    epoch_list = [5]
 
     print("one")
     model_original = model_keras(work_id, data)
-    model_original.save("network_init_" + str(work_id) + ".hd5")
+    init_keras_variables_session()
+
+    weights_init = model_original.get_weights()
+    pickle.dump(weights_init, open("weights_init_" + str(work_id) + ".pickle", 'wb'))
 
     save_callback = CustomSaver(epoch_list)
     model_information_original_network = model_original.fit(x_train, y_train, epochs=total_training_epoch,
@@ -61,28 +64,27 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
     count = 0
     for pruning_method in pruning_types:
         # get the parent weights at the corresponding epoch
-        original_network = load_model("original_network_" + str(epoch_list[0]) + ".hd5")
-        weights_trained_original = original_network.get_weights()
+        weights_trained_original = pickle.load(open("trained_weights_" + str(epoch_list[0]) + ".pickle", "rb"))
+        original_network = model_keras(work_id, data, None, weights_trained_original, None)
 
-        print("crossover method: " + pruning_method)
+        print("Pruning method: " + pruning_method)
         list_gradient_weight = keras_get_gradient_weights(original_network, x_test)
         list_gradient_hidden_layers = get_gradients_hidden_layers(original_network, x_test)
         list_hidden_representation = keras_get_hidden_layers(original_network, x_test)
+
         list_corr_matrices = get_corr(list_hidden_representation)
 
-        weights_pruned = prune(weights_trained_original, list_hidden_representation,
-                               list_gradient_hidden_layers,
-                               list_gradient_weight,
-                               list_corr_matrices, work_id,
-                               pruning_method, quantile)
+        weights_pruned, mask = prune(weights_trained_original, list_hidden_representation,
+                                     list_gradient_hidden_layers,
+                                     list_gradient_weight,
+                                     list_corr_matrices, work_id,
+                                     pruning_method, quantile)
 
         # get the new size of the networks
         pruned_hidden_layer_size = [weight.shape[0] for weight in weights_pruned if len(weight.shape) == 1]
         print(pruned_hidden_layer_size)
 
-        model_pruned = model_keras(0, data, pruned_hidden_layer_size)
-
-        model_pruned.set_weights(weights_pruned)
+        model_pruned = model_keras(0, data, pruned_hidden_layer_size, weights_pruned, mask)
         model_information_pruned = model_pruned.fit(x_train, y_train,
                                                     epochs=int(total_training_epoch / 2),
                                                     batch_size=batch_size_original,

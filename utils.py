@@ -104,7 +104,7 @@ def get_corr(hidden_representation_list_one):
     return list_corr_matrices
 
 
-def add_noise(parent_weights, t, seed):
+def add_noise(parent_weights, seed, t=0.5):
     np.random.seed(seed)
 
     scale_factor = np.sqrt(1 / (np.power(t, 2) + np.power(1 - t, 2)))

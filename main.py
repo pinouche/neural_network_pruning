@@ -14,11 +14,12 @@ from utils import get_gradients_hidden_layers
 from utils import get_corr
 from utils import load_cifar
 
-from compute_mask import prune
-
 from feed_forward import CustomSaver
 from feed_forward import model_keras
 from feed_forward import init_keras_variables_session
+
+from compute_mask import prune
+from retraining_strategies import mask_one_action
 
 warnings.filterwarnings("ignore")
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
@@ -34,14 +35,15 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
 
     print("FOR PAIR NUMBER " + str(work_id + 1))
 
-    # pruning_types = ["pruning_low_corr_neurons_fine_tune", "pruning_low_corr_neurons_add_noise",
-    # "pruning_low_corr_neurons_lottery", pruning_random_weights", "pruning_magnitude_weights_local",
+    # pruning_types = ["pruning_low_corr_neurons", "pruning_random_weights", "pruning_magnitude_weights_local",
     # "pruning_magnitude_weights_global", "pruning_gradient_weights_local", "pruning_gradient_weights_global",
     # "pruning_random_neurons", "pruning_magnitude_neurons_local", "pruning_magnitude_neurons_global".
     # "pruning_gradient_neurons_local", "pruning_gradient_neurons_global"]
-    pruning_types = ["pruning_magnitude_weights_global"]
+    pruning_strategies = ["pruning_magnitude_weights_global"]
 
-    result_list = [[] for _ in range(len(pruning_types))]
+    retraining_strategies = ["fine_tune"]
+
+    result_list = [[] for _ in range(len(pruning_strategies))]
     batch_size_original = 256
     quantile = 0.5
     total_training_epoch = 5
@@ -59,42 +61,41 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
                                                             batch_size=batch_size_original,
                                                             verbose=False,
                                                             validation_data=(x_test, y_test), callbacks=[save_callback])
-    print("two")
 
     count = 0
-    for pruning_method in pruning_types:
-        # get the parent weights at the corresponding epoch
-        weights_trained_original = pickle.load(open("trained_weights_" + str(epoch_list[0]) + ".pickle", "rb"))
-        original_network = model_keras(work_id, data, None, weights_trained_original, None)
+    for pruning_method in pruning_strategies:
+        for retraining_method in retraining_strategies:
+            # get the parent weights at the corresponding epoch
+            weights_trained_original = pickle.load(open("trained_weights_" + str(epoch_list[0]) + ".pickle", "rb"))
+            original_network = model_keras(work_id, data, None, weights_trained_original, None)
 
-        print("Pruning method: " + pruning_method)
-        list_gradient_weight = keras_get_gradient_weights(original_network, x_test)
-        list_gradient_hidden_layers = get_gradients_hidden_layers(original_network, x_test)
-        list_hidden_representation = keras_get_hidden_layers(original_network, x_test)
+            print("Pruning method: " + pruning_method)
+            list_gradient_weight = keras_get_gradient_weights(original_network, x_test)
+            list_gradient_hidden_layers = get_gradients_hidden_layers(original_network, x_test)
+            list_hidden_representation = keras_get_hidden_layers(original_network, x_test)
 
-        list_corr_matrices = get_corr(list_hidden_representation)
+            list_corr_matrices = get_corr(list_hidden_representation)
 
-        weights_pruned, mask = prune(weights_trained_original, list_hidden_representation,
-                                     list_gradient_hidden_layers,
-                                     list_gradient_weight,
-                                     list_corr_matrices, work_id,
-                                     pruning_method, quantile)
+            weights_pruned, mask = prune(list_hidden_representation, list_gradient_hidden_layers, list_gradient_weight,
+                                         list_corr_matrices, work_id, pruning_method, quantile)
 
-        # get the new size of the networks
-        pruned_hidden_layer_size = [weight.shape[0] for weight in weights_pruned if len(weight.shape) == 1]
-        print(pruned_hidden_layer_size)
+            weights_pruned = mask_one_action(weights_pruned, mask, pruning_method, retraining_method)
 
-        model_pruned = model_keras(0, data, pruned_hidden_layer_size, weights_pruned, mask)
-        model_information_pruned = model_pruned.fit(x_train, y_train,
-                                                    epochs=int(total_training_epoch / 2),
-                                                    batch_size=batch_size_original,
-                                                    verbose=False, validation_data=(x_test, y_test))
+            # get the new size of the networks
+            pruned_hidden_layer_size = [weight.shape[0] for weight in weights_pruned if len(weight.shape) == 1]
+            print(pruned_hidden_layer_size)
 
-        result_list[count].append(model_information_original_network.history["val_loss"])
-        result_list[count].append(model_information_pruned.history["val_loss"])
+            model_pruned = model_keras(0, data, pruned_hidden_layer_size, weights_pruned, mask)
+            model_information_pruned = model_pruned.fit(x_train, y_train,
+                                                        epochs=int(total_training_epoch / 2),
+                                                        batch_size=batch_size_original,
+                                                        verbose=False, validation_data=(x_test, y_test))
 
-        keras.backend.clear_session()
-        count += 1
+            result_list[count].append(model_information_original_network.history["val_loss"])
+            result_list[count].append(model_information_pruned.history["val_loss"])
+
+            keras.backend.clear_session()
+            count += 1
 
     if parallel == "process":
         data_struc[str(work_id) + "_performance"] = result_list

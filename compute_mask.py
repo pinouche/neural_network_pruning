@@ -30,7 +30,7 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
     pruned_trained_network = []
     mask_list = []
 
-    if pruning_strategy == "pruning_random_weights": #global
+    if pruning_strategy == "pruning_random_weights":  # global
         size = np.sum([np.prod(weight.shape) for weight in weights_list])
         n_zeros = int(size * threshold)
         mask = np.array([0] * n_zeros + [1] * (size - n_zeros))
@@ -41,8 +41,7 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
             number_weights = np.prod(weight.shape)
             mask_weight = mask[count:number_weights + count]
             mask_weight = mask_weight.reshape(weight.shape)
-            mask_weight = mask_weight.astype(bool)
-            weight = weight*mask
+            weight = weight*mask_weight
             pruned_trained_network.append(weight)
             mask_list.append(mask_weight)
             count += number_weights
@@ -53,7 +52,7 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
         for weight in weights_list:
             score = np.abs(weight)
             quantile = np.quantile(score, threshold)
-            mask = np.ones(weight.shape)
+            mask = np.ones(weight.shape).astype(int)
             mask[score < quantile] = 0
             weight = weight*mask
             pruned_trained_network.append(weight)
@@ -67,7 +66,7 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
 
         for weight in weights_list:
             score = np.abs(weight)
-            mask = np.ones(weight.shape)
+            mask = np.ones(weight.shape).astype(int)
             mask[score < quantile] = 0
             weight = weight * mask
             pruned_trained_network.append(weight)
@@ -80,7 +79,7 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
             weight = weights_list[index]
             score = np.abs(weight) * gradients_list[index]
             quantile = np.quantile(score, threshold)
-            mask = np.ones(weight.shape)
+            mask = np.ones(weight.shape).astype(int)
             mask[score < quantile] = 0
             weight = weight*mask
             pruned_trained_network.append(weight)
@@ -89,15 +88,15 @@ def apply_mask_to_weights(weights_list, gradients_list, pruning_strategy, thresh
         return pruned_trained_network, mask_list
 
     if pruning_strategy == "pruning_gradient_weights_global":
-        weights_flatten = [np.abs(weight) for weight_matrix in weights_list for weight in weight_matrix.flatten()]
-        gradients_flatten = [gradient for weight_matrix in gradients_list for gradient in weight_matrix.flatten()]
+        weights_flatten = np.array([np.abs(weight) for weight_matrix in weights_list for weight in weight_matrix.flatten()])
+        gradients_flatten = np.array([gradient for weight_matrix in gradients_list for gradient in weight_matrix.flatten()])
         score = weights_flatten * gradients_flatten
         quantile = np.quantile(score, threshold)
 
         for index in range(len(weights_list)):
             weight = weights_list[index]
             score = np.abs(weight) * gradients_list[index]
-            mask = np.ones(weight.shape)
+            mask = np.ones(weight.shape).astype(int)
             mask[score < quantile] = 0
             weight = weight * mask
             pruned_trained_network.append(weight)

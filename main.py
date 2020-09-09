@@ -10,7 +10,7 @@ import keras
 
 from utils import keras_get_gradient_weights
 from utils import keras_get_hidden_layers
-from utils import get_gradients_hidden_layers
+from utils import keras_get_gradients_hidden_layers
 from utils import get_corr
 from utils import load_cifar
 
@@ -39,6 +39,8 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
                           "pruning_magnitude_weights_global", "pruning_gradient_weights_local", "pruning_gradient_weights_global",
                           "pruning_random_neurons", "pruning_magnitude_neurons_local", "pruning_magnitude_neurons_global",
                           "pruning_gradient_neurons_local", "pruning_gradient_neurons_global"]
+
+    pruning_strategies = ["pruning_gradient_weights_local"]
 
     retraining_strategies = ["fine_tune", "add_noise_and_fine_tune", "lottery"]
 
@@ -72,7 +74,7 @@ def crossover_offspring(data, x_train, y_train, x_test, y_test, work_id, data_st
             original_network = model_keras(work_id, data, None, weights_trained_original, None)
 
             list_gradient_weight = keras_get_gradient_weights(original_network, x_test)
-            list_gradient_hidden_layers = get_gradients_hidden_layers(original_network, x_test)
+            list_gradient_hidden_layers = keras_get_gradients_hidden_layers(original_network, x_test, y_test)
             list_hidden_representation = keras_get_hidden_layers(original_network, x_test)
 
             list_corr_matrices = get_corr(list_hidden_representation)

@@ -132,7 +132,7 @@ def prune(weights_trained_original, list_hidden_representation, list_gradient_hi
                                 "pruning_gradient_weights_local", "pruning_gradient_weights_global"]:
 
             pruned_network, mask_list = apply_mask_to_weights(weights_trained_original,
-                                                                      list_gradient_weights, pruning_strategy, threshold)
+                                                              list_gradient_weights, pruning_strategy, threshold)
 
         # neuron-level (global)
         elif pruning_strategy == "pruning_random_neurons":
@@ -157,7 +157,6 @@ def prune(weights_trained_original, list_hidden_representation, list_gradient_hi
             mask_list = []
             for hidden_layer in list_hidden_representation:
                 score = np.mean(np.abs(hidden_layer), axis=0)
-                print(score.shape)
                 quantile = np.quantile(score, threshold)
                 mask_array = score >= quantile
                 mask_list.append(mask_array)

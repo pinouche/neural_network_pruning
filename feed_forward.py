@@ -38,7 +38,6 @@ class Selu(keras.layers.Layer):
 
     def call(self, inputs):
 
-        print(self.w, self.b)
         activation_layer = keras.activations.selu(tf.matmul(inputs, self.w) + self.b)
 
         return activation_layer

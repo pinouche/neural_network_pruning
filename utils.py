@@ -35,18 +35,31 @@ def load_cifar(flatten=True):
     return x_train, x_test, y_train, y_test
 
 
-def keras_get_gradient_weights(model, data_x):
-    batch_size = 512
-    output = model.layers[-2].output
-    trainable_weights_list = model.trainable_weights
-    gradients = keras.backend.gradients(output, trainable_weights_list)
-    get_gradients = keras.backend.function(model.inputs[0], gradients)
+def keras_get_gradients_hidden_layers(model, data_x, data_y):
+    y_true = keras.Input(shape=(1,))
+    loss = keras.backend.categorical_crossentropy(y_true, model.output)
+    model_layers = [layer.output for layer in model.layers[:-2]]
 
-    n, p = data_x.shape[0], data_x.shape[1]
+    gradients = keras.backend.gradients(loss, model_layers)
+    func = keras.backend.function([model.inputs, y_true], gradients)
+
+    gradient_list = func([data_x, data_y])
+
+    return gradient_list
+
+
+def keras_get_gradient_weights(model, data_x):
+
+    batch_size = 2048
+    loss = model.layers[-2].output
+
+    trainable_weights_list = model.trainable_weights
+    gradients = keras.backend.gradients(loss, trainable_weights_list)
+    get_gradients = keras.backend.function(model.inputs, gradients)
 
     gradient_list = []
     for index in range(batch_size):
-        gradient_list.append(get_gradients([data_x[index, :].reshape(1, p)]))
+        gradient_list.append(get_gradients([np.expand_dims(data_x[index, :], axis=0)]))
 
     gradient_list = np.mean(np.abs(np.array(gradient_list)), axis=0)
 
@@ -66,23 +79,6 @@ def keras_get_hidden_layers(model, data_x):
         hidden_layers_list.append(hidden_layer)
 
     return hidden_layers_list
-
-
-def get_gradients_hidden_layers(model, data_x):
-    hidden_layers_list = [layer.output for layer in model.layers[:-2]]
-    inputs = model.inputs[0]
-    output = model.layers[-2].output
-
-    gradients = keras.backend.gradients(output, hidden_layers_list)
-    get_gradients = keras.backend.function(inputs, gradients)
-
-    p = data_x.shape[1]
-
-    gradient_list = []
-    for index in range(data_x.shape[0]):
-        gradient_list.append(get_gradients([data_x[index, :].reshape(1, p)]))
-
-    return gradient_list
 
 
 def get_corr(hidden_representation_list_one):
